@@ -4,7 +4,6 @@ import { doc, setDoc, getDoc } from "firebase/firestore";
 import { db } from "./lib/firebase";
 
 const App = () => {
-  // Initial state for the columns and tasks in the Kanban board
   const [column, setColumn] = useState({
     todo: {
       name: "To Do",
@@ -19,16 +18,14 @@ const App = () => {
       items: [],
     },
   });
-
-  // State for the new task input
   const [newTask, setNewTask] = useState("");
-
-  // State to track the active column for drag-and-drop functionality
   const [activeColumn, setActiveColumn] = useState("todo");
-
-  // State to track the currently dragged item during drag-and-drop operations
   const [draggedItem, setDraggedItem] = useState(null);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [dropIndex, setDropIndex] = useState(null);
+
+  const STORAGE_KEY = "kanbanData";
+  const columnOrder = ["todo", "inprogress", "done"];
 
   const addNewTask = () => {
     if (newTask.trim() === "") return; // Prevent adding empty tasks
@@ -73,15 +70,45 @@ const App = () => {
     e.preventDefault(); // Prevent default behavior to allow dropping
   };
 
+  // const handleDrop = (e, columnId) => {
+  //   e.preventDefault();
+  //   if (!draggedItem) return; // If no item is being dragged, do nothing
+
+  //   // 🚫 Prevent same-column duplication
+  //   if (draggedItem.columnId === columnId) {
+  //     setDraggedItem(null);
+  //     return;
+  //   }
+
+  //   setColumn((prev) => {
+  //     const sourceCol = prev[draggedItem.columnId];
+  //     const targetCol = prev[columnId];
+
+  //     const draggedItemData = sourceCol.items.find(
+  //       (item) => item.id === draggedItem.item.id,
+  //     );
+
+  //     return {
+  //       ...prev,
+  //       [draggedItem.columnId]: {
+  //         ...sourceCol,
+  //         items: sourceCol.items.filter(
+  //           (item) => item.id !== draggedItem.item.id,
+  //         ),
+  //       },
+  //       [columnId]: {
+  //         ...targetCol,
+  //         items: [...targetCol.items, draggedItemData],
+  //       },
+  //     };
+  //   });
+
+  //   setDraggedItem(null); // Clear the dragged item state after dropping
+  // };
+
   const handleDrop = (e, columnId) => {
     e.preventDefault();
-    if (!draggedItem) return; // If no item is being dragged, do nothing
-
-    // 🚫 Prevent same-column duplication
-    if (draggedItem.columnId === columnId) {
-      setDraggedItem(null);
-      return;
-    }
+    if (!draggedItem) return;
 
     setColumn((prev) => {
       const sourceCol = prev[draggedItem.columnId];
@@ -91,22 +118,41 @@ const App = () => {
         (item) => item.id === draggedItem.item.id,
       );
 
+      // Remove from source
+      const newSourceItems = sourceCol.items.filter(
+        (item) => item.id !== draggedItem.item.id,
+      );
+
+      // Prepare target items
+      let newTargetItems = [...targetCol.items];
+
+      // If moving within same column, adjust index
+      if (draggedItem.columnId === columnId) {
+        newTargetItems = newSourceItems;
+      }
+
+      // Insert at correct position
+      const insertIndex =
+        dropIndex !== null ? dropIndex : newTargetItems.length;
+
+      newTargetItems.splice(insertIndex, 0, draggedItemData);
+
       return {
         ...prev,
         [draggedItem.columnId]: {
           ...sourceCol,
-          items: sourceCol.items.filter(
-            (item) => item.id !== draggedItem.item.id,
-          ),
+          items:
+            draggedItem.columnId === columnId ? newTargetItems : newSourceItems,
         },
         [columnId]: {
           ...targetCol,
-          items: [...targetCol.items, draggedItemData],
+          items: newTargetItems,
         },
       };
     });
 
-    setDraggedItem(null); // Clear the dragged item state after dropping
+    setDraggedItem(null);
+    setDropIndex(null);
   };
 
   const saveToFirebase = async (data) => {
@@ -135,20 +181,33 @@ const App = () => {
   };
 
   useEffect(() => {
-    if (!isLoaded) return; // 🚫 don't save before loading finishes
+    if (!isLoaded) return;
 
+    // Save locally (instant)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(column));
+
+    // Save remotely (async)
     saveToFirebase(column);
   }, [column, isLoaded]);
 
   useEffect(() => {
     const fetchData = async () => {
-      const data = await loadFromFirebase();
+      // 1️⃣ Try localStorage first
+      const localData = localStorage.getItem(STORAGE_KEY);
 
-      if (data) {
-        setColumn(data);
+      if (localData) {
+        setColumn(JSON.parse(localData));
       }
 
-      setIsLoaded(true); // ✅ NOW it runs AFTER loading finishes
+      // 2️⃣ Then try Firebase (override if exists)
+      const firebaseData = await loadFromFirebase();
+
+      if (firebaseData) {
+        setColumn(firebaseData);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(firebaseData));
+      }
+
+      setIsLoaded(true);
     };
 
     fetchData();
@@ -195,11 +254,28 @@ const App = () => {
               onChange={(e) => setActiveColumn(e.target.value)}
               className="p-3 bg-zinc-700 text-white border-0 border-l border-zinc-600 outline-none"
             >
-              {Object.keys(column).map((col) => (
+              {/* {Object.keys(column).map((col) => (
+                <option key={col} value={col}>
+                  {column[col].name}
+                </option>
+              ))} */}
+              {columnOrder.map((col) => (
                 <option key={col} value={col}>
                   {column[col].name}
                 </option>
               ))}
+              {/* 
+              
+              Check if this version would be the best
+
+              columnOrder.map((col) => (
+  <option key={col} value={col}>
+    {column[col].name}
+  </option>
+))
+              
+              
+              */}
             </select>
 
             <button
@@ -211,8 +287,7 @@ const App = () => {
           </section>
 
           <section className="flex gap-6 overflow-x-auto pb-6 w-full justify-center">
-            {/* Column Sections */}
-            {Object.entries(column).map(
+            {/* {Object.entries(column).map(
               (
                 [columnId, columnData], // the tutor went with object.keys
               ) => (
@@ -237,11 +312,15 @@ const App = () => {
                     {columnData.items.length === 0 ? (
                       <p className="text-center text-zinc-500">No tasks</p>
                     ) : (
-                      columnData.items.map((item) => (
+                      columnData.items.map((item, index) => (
                         <div
                           key={item.id}
                           draggable
                           onDragStart={() => handleDragStart(columnId, item)}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            setDropIndex(index);
+                          }}
                           className="bg-zinc-700 text-white p-3 rounded-lg shadow-md cursor-move flex justify-between items-center transform transition-all duration-200 hover:scale-105 hover:shadow-lg"
                         >
                           <span>{item.content}</span>
@@ -249,7 +328,6 @@ const App = () => {
                             onClick={() => removeTask(columnId, item.id)}
                             className="ml-4 text-zinc-400 hover:text-red-400 transition-colors duration-200"
                           >
-                            {/* &times; */}
                             <X className="text-lg" />
                           </button>
                         </div>
@@ -258,7 +336,57 @@ const App = () => {
                   </section>
                 </section>
               ),
-            )}
+            )} */}
+            {columnOrder.map((columnId) => {
+              const columnData = column[columnId];
+
+              return (
+                <section
+                  key={columnId}
+                  onDragOver={(e) => handleDragOver(e, columnId)}
+                  onDrop={(e) => handleDrop(e, columnId)}
+                  className={`w-80 flex-shrink-0 rounded-lg ${columnStyles[columnId].border} border-2 shadow-xl bg-zinc-800`}
+                >
+                  <h2
+                    className={`text-xl font-bold p-4 text-white ${columnStyles[columnId].header}`}
+                  >
+                    {columnData.name}
+                    {columnData.items.length > 0 && (
+                      <span className="ml-2 text-sm bg-zinc-700 text-white rounded-full px-2 py-1">
+                        {columnData.items.length}
+                      </span>
+                    )}
+                  </h2>
+
+                  <section className="p-4 flex flex-col gap-4 min-h-64 ">
+                    {columnData.items.length === 0 ? (
+                      <p className="text-center text-zinc-500">No tasks</p>
+                    ) : (
+                      columnData.items.map((item, index) => (
+                        <div
+                          key={item.id}
+                          draggable
+                          onDragStart={() => handleDragStart(columnId, item)}
+                          onDragOver={(e) => {
+                            e.preventDefault();
+                            setDropIndex(index);
+                          }}
+                          className="bg-zinc-700 text-white p-3 rounded-lg shadow-md cursor-move flex justify-between items-center transform transition-all duration-200 hover:scale-105 hover:shadow-lg"
+                        >
+                          <span>{item.content}</span>
+                          <button
+                            onClick={() => removeTask(columnId, item.id)}
+                            className="ml-4 text-zinc-400 hover:text-red-400 transition-colors duration-200"
+                          >
+                            <X className="text-lg" />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </section>
+                </section>
+              );
+            })}
           </section>
         </section>
       </section>
