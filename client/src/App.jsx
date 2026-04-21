@@ -1,37 +1,22 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { X } from "lucide-react";
+import { doc, setDoc, getDoc } from "firebase/firestore";
+import { db } from "./lib/firebase";
 
 const App = () => {
   // Initial state for the columns and tasks in the Kanban board
   const [column, setColumn] = useState({
     todo: {
       name: "To Do",
-      items: [
-        { id: "1", content: "Native App Development" },
-        { id: "2", content: "Web App Development" },
-        { id: "3", content: "UI/UX Design" },
-        { id: "4", content: "Project Management" },
-        { id: "5", content: "Testing & QA" },
-      ],
+      items: [],
     },
     inprogress: {
       name: "In Progress",
-      items: [
-        { id: "6", content: "Mobile App Development" },
-        { id: "7", content: "Backend Development" },
-        { id: "8", content: "Frontend Development" },
-        { id: "9", content: "Database Design" },
-        { id: "10", content: "API Integration" },
-      ],
+      items: [],
     },
     done: {
       name: "Done",
-      items: [
-        { id: "11", content: "Requirement Analysis" },
-        { id: "12", content: "Wireframing" },
-        { id: "13", content: "Prototyping" },
-        { id: "14", content: "Deployment" },
-        { id: "15", content: "Maintenance & Support" },
-      ],
+      items: [],
     },
   });
 
@@ -43,6 +28,7 @@ const App = () => {
 
   // State to track the currently dragged item during drag-and-drop operations
   const [draggedItem, setDraggedItem] = useState(null);
+  const [isLoaded, setIsLoaded] = useState(false);
 
   const addNewTask = () => {
     if (newTask.trim() === "") return; // Prevent adding empty tasks
@@ -80,36 +66,93 @@ const App = () => {
   };
 
   const handleDragStart = (columnId, item) => {
-    setDraggedItem(columnId, item); // Set the currently dragged item and its column
+    setDraggedItem({ columnId, item }); // Set the currently dragged item and its column
   };
 
   const handleDragOver = (e) => {
     e.preventDefault(); // Prevent default behavior to allow dropping
   };
 
-  const handleDrop = (columnId) => {
+  const handleDrop = (e, columnId) => {
+    e.preventDefault();
     if (!draggedItem) return; // If no item is being dragged, do nothing
 
-    // Update the state to move the dragged item to the new column
+    // 🚫 Prevent same-column duplication
+    if (draggedItem.columnId === columnId) {
+      setDraggedItem(null);
+      return;
+    }
+
     setColumn((prev) => {
-      const newColumns = { ...prev };
-      const draggedItemData = newColumns[draggedItem.columnId].items.find(
+      const sourceCol = prev[draggedItem.columnId];
+      const targetCol = prev[columnId];
+
+      const draggedItemData = sourceCol.items.find(
         (item) => item.id === draggedItem.item.id,
       );
 
-      // Remove the dragged item from its original column
-      newColumns[draggedItem.columnId].items = newColumns[
-        draggedItem.columnId
-      ].items.filter((item) => item.id !== draggedItem.item.id);
-
-      // Add the dragged item to the new column
-      newColumns[columnId].items.push(draggedItemData);
-
-      return newColumns; // Return the updated columns state
+      return {
+        ...prev,
+        [draggedItem.columnId]: {
+          ...sourceCol,
+          items: sourceCol.items.filter(
+            (item) => item.id !== draggedItem.item.id,
+          ),
+        },
+        [columnId]: {
+          ...targetCol,
+          items: [...targetCol.items, draggedItemData],
+        },
+      };
     });
 
     setDraggedItem(null); // Clear the dragged item state after dropping
   };
+
+  const saveToFirebase = async (data) => {
+    try {
+      await setDoc(doc(db, "boards", "mainBoard"), {
+        columns: data,
+      });
+    } catch (err) {
+      console.error("Error saving:", err);
+    }
+  };
+
+  const loadFromFirebase = async () => {
+    try {
+      const docRef = doc(db, "boards", "mainBoard");
+      const docSnap = await getDoc(docRef);
+
+      if (docSnap.exists()) {
+        return docSnap.data().columns;
+      }
+    } catch (err) {
+      console.error("Error loading:", err);
+    }
+
+    return null;
+  };
+
+  useEffect(() => {
+    if (!isLoaded) return; // 🚫 don't save before loading finishes
+
+    saveToFirebase(column);
+  }, [column, isLoaded]);
+
+  useEffect(() => {
+    const fetchData = async () => {
+      const data = await loadFromFirebase();
+
+      if (data) {
+        setColumn(data);
+      }
+
+      setIsLoaded(true); // ✅ NOW it runs AFTER loading finishes
+    };
+
+    fetchData();
+  }, []);
 
   const columnStyles = {
     todo: {
@@ -134,6 +177,7 @@ const App = () => {
             Pickaxe & Shovel Vision
           </h1>
 
+          {/* New Task Input */}
           <section className="mb-8 w-full flex max-w-lg shadow-lg rounded-lg overflow-hidden">
             <input
               type="text"
@@ -166,43 +210,55 @@ const App = () => {
             </button>
           </section>
 
-          <section className="flex gap-6 overflow-x-auto pb-6 w-full">
-            {Object.entries(column).map(([columnId, columnData]) => (
-              <section
-                key={columnId}
-                onDragOver={handleDragOver}
-                onDrop={() => handleDrop(columnId)}
-                className={`w-80 flex-shrink-0 rounded-lg ${columnStyles[columnId].border} border-2`}
-              >
-                <h2
-                  className={`text-xl font-bold p-4 text-white ${columnStyles[columnId].header}`}
+          <section className="flex gap-6 overflow-x-auto pb-6 w-full justify-center">
+            {/* Column Sections */}
+            {Object.entries(column).map(
+              (
+                [columnId, columnData], // the tutor went with object.keys
+              ) => (
+                <section
+                  key={columnId}
+                  onDragOver={(e) => handleDragOver(e, columnId)}
+                  onDrop={(e) => handleDrop(e, columnId)}
+                  className={`w-80 flex-shrink-0 rounded-lg ${columnStyles[columnId].border} border-2 shadow-xl bg-zinc-800`}
                 >
-                  {columnData.name}
-                </h2>
+                  <h2
+                    className={`text-xl font-bold p-4 text-white ${columnStyles[columnId].header}`}
+                  >
+                    {columnData.name}
+                    {columnData.items.length > 0 && (
+                      <span className="ml-2 text-sm bg-zinc-700 text-white rounded-full px-2 py-1">
+                        {columnData.items.length}
+                      </span>
+                    )}
+                  </h2>
 
-                <section className="p-4 flex flex-col gap-4">
-                  {columnData.items.map((item) => (
-                    <div
-                      key={item.id}
-                      draggable
-                      onDragStart={() =>
-                        handleDragStart(columnId, { columnId, item })
-                      }
-                      className="p-3 bg-zinc-700 text-white rounded cursor-move"
-                    >
-                      {item.content}
-
-                      <button
-                        onClick={() => removeTask(columnId, item.id)}
-                        className="ml-2 text-red-500 hover:text-red-400 transition-all duration-200"
-                      >
-                        &times;
-                      </button>
-                    </div>
-                  ))}
+                  <section className="p-4 flex flex-col gap-4 min-h-64 ">
+                    {columnData.items.length === 0 ? (
+                      <p className="text-center text-zinc-500">No tasks</p>
+                    ) : (
+                      columnData.items.map((item) => (
+                        <div
+                          key={item.id}
+                          draggable
+                          onDragStart={() => handleDragStart(columnId, item)}
+                          className="bg-zinc-700 text-white p-3 rounded-lg shadow-md cursor-move flex justify-between items-center transform transition-all duration-200 hover:scale-105 hover:shadow-lg"
+                        >
+                          <span>{item.content}</span>
+                          <button
+                            onClick={() => removeTask(columnId, item.id)}
+                            className="ml-4 text-zinc-400 hover:text-red-400 transition-colors duration-200"
+                          >
+                            {/* &times; */}
+                            <X className="text-lg" />
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </section>
                 </section>
-              </section>
-            ))}
+              ),
+            )}
           </section>
         </section>
       </section>
